@@ -5,29 +5,273 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>再保险合约与巨灾暴露管理</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
-    main { max-width: 960px; margin: auto; }
-    button { padding: .55rem .9rem; cursor: pointer; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; background: #f7f9fb; }
+    main { max-width: 1080px; margin: auto; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; border-left: 4px solid #2f6fb0; padding-left: .5rem; }
+    h3 { font-size: .95rem; margin: 1.2rem 0 .4rem; }
+    button { padding: .45rem .85rem; cursor: pointer; border: 1px solid #2f6fb0; background: #2f6fb0; color: #fff; border-radius: 6px; }
+    button.secondary { background: #fff; color: #2f6fb0; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    input, select { padding: .4rem .5rem; border: 1px solid #c4cdd5; border-radius: 6px; font-size: .9rem; }
     pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    table { border-collapse: collapse; width: 100%; font-size: .85rem; background: #fff; }
+    th, td { border: 1px solid #e2e6ea; padding: .4rem .55rem; text-align: left; }
+    th { background: #eef3f8; }
+    .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin: .8rem 0; }
+    .card { background: #fff; border: 1px solid #e2e6ea; border-radius: 8px; padding: .8rem 1rem; min-width: 170px; flex: 1; }
+    .card .label { font-size: .75rem; color: #6b7785; }
+    .card .value { font-size: 1.25rem; font-weight: 600; margin-top: .2rem; }
+    .neg { color: #c02b22; }
+    .tag { display: inline-block; font-size: .72rem; padding: .1rem .45rem; border-radius: 10px; }
+    .tag.pending { background: #fdf3d7; color: #8a6100; }
+    .tag.confirmed { background: #dff2e2; color: #1e6b2f; }
+    .tag.decrease { background: #fde2e0; color: #a1261c; }
+    .tag.increase { background: #dff2e2; color: #1e6b2f; }
+    form.inline { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .5rem 0; background: #fff; padding: .7rem; border: 1px dashed #c4cdd5; border-radius: 8px; }
+    .row-link { cursor: pointer; color: #2f6fb0; text-decoration: underline; }
+    #banner { margin: .5rem 0; padding: .6rem .8rem; border-radius: 6px; display: none; font-size: .85rem; white-space: pre-wrap; }
+    #banner.error { background: #fde2e0; color: #a1261c; display: block; }
+    #banner.ok { background: #dff2e2; color: #1e6b2f; display: block; }
+    .muted { color: #6b7785; font-size: .8rem; }
   </style>
 </head>
 <body>
 <main>
   <h1>再保险合约与巨灾暴露管理</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+
+  <h2>合约台账</h2>
+  <div id="banner"></div>
+  <form class="inline" id="treaty-form">
+    <input name="reference" placeholder="合约定号 如 TREATY-01" required>
+    <input name="name" placeholder="合约名称" required>
+    <input name="initial_limit" type="number" step="0.01" min="0.01" placeholder="初始限额" required>
+    <input name="inception_date" type="date">
+    <button type="submit">新建合约</button>
+    <button type="button" class="secondary" id="reload-treaties">刷新合约列表</button>
+  </form>
+  <table>
+    <thead><tr><th>合约定号</th><th>名称</th><th>当前限额</th><th>已用（核定摊回）</th><th>剩余承载力</th><th>待确认批单</th><th></th></tr></thead>
+    <tbody id="treaty-rows"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+  </table>
+
+  <div id="treaty-detail" hidden>
+    <h2 id="detail-title"></h2>
+    <div class="cards">
+      <div class="card"><div class="label">当前限额</div><div class="value" id="d-limit"></div></div>
+      <div class="card"><div class="label">已用（已核定摊回）</div><div class="value" id="d-used"></div></div>
+      <div class="card"><div class="label">剩余承载力</div><div class="value" id="d-remaining"></div></div>
+    </div>
+
+    <h3>登记批单（加保 / 减保）</h3>
+    <form class="inline" id="endo-form">
+      <input name="effective_date" type="date" required>
+      <select name="direction"><option value="increase">加保</option><option value="decrease">减保</option></select>
+      <input name="amount" type="number" step="0.01" min="0.01" placeholder="变更金额" required>
+      <input name="reason" placeholder="经办原因" required style="min-width:220px">
+      <button type="submit">登记批单</button>
+    </form>
+    <table>
+      <thead><tr><th>#</th><th>生效日</th><th>类型</th><th>金额</th><th>经办原因</th><th>状态</th><th>确认序号</th><th>经办人</th><th></th></tr></thead>
+      <tbody id="endo-rows"></tbody>
+    </table>
+
+    <h3>限额版本（按生效先后重算）</h3>
+    <table>
+      <thead><tr><th>版本</th><th>生效日</th><th>批单</th><th>版本限额</th></tr></thead>
+      <tbody id="version-rows"></tbody>
+    </table>
+
+    <h3>登记已核定赔案（占用承载力）</h3>
+    <form class="inline" id="claim-form">
+      <input name="claim_number" placeholder="赔案编号" required>
+      <input name="approved_date" type="date">
+      <input name="recoverable_amount" type="number" step="0.01" min="0.01" placeholder="核定摊回金额" required>
+      <button type="submit">登记赔案</button>
+    </form>
+    <table>
+      <thead><tr><th>赔案编号</th><th>核定日</th><th>摊回金额</th></tr></thead>
+      <tbody id="claim-rows"></tbody>
+    </table>
+
+    <h3>余额快照（每次变更留存）</h3>
+    <table>
+      <thead><tr><th>时间</th><th>类型</th><th>生效日</th><th>限额</th><th>已用</th><th>剩余</th><th>说明</th><th>操作人</th></tr></thead>
+      <tbody id="snapshot-rows"></tbody>
+    </table>
+  </div>
+
+  <h2>赔案工作流（原有功能）</h2>
+  <p class="muted">完整流程仍通过 README 中的 JSON 接口调用。</p>
+  <div><button class="secondary" id="load-records">加载工作流记录</button></div>
+  <pre id="output" hidden></pre>
 </main>
 <script>
-const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo","Content-Type":"application/json"};
+let currentTreatyId = null;
+
+function fmt(value) {
+  if (value === null || value === undefined) return "—";
+  return Number(value).toLocaleString("zh-CN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function banner(message, ok) {
+  const el = document.getElementById("banner");
+  el.textContent = message;
+  el.className = ok ? "ok" : "error";
+}
+async function api(path, options) {
+  const response = await fetch(path, Object.assign({headers}, options || {}));
+  const data = await response.json();
+  if (!response.ok) {
+    if (data.details && data.details.occupancies) {
+      const d = data.details;
+      const lines = d.occupancies.map(c => `  · ${c.claim_number}（核定日 ${c.approved_date}）摊回 ${fmt(c.recoverable_amount)}`);
+      throw new Error(`${data.message}\n合约：${d.treaty_reference} ${d.treaty_name}\n生效日 ${d.effective_date}：限额 ${fmt(d.limit_after)}，已核定摊回 ${fmt(d.used_approved_recoveries)}，可用 ${fmt(d.available)}\n占用明细：\n${lines.join("\n")}`);
+    }
+    throw new Error(data.message || "请求失败");
+  }
+  return data;
+}
+
+async function loadTreaties() {
+  const items = (await api("/api/treaties?limit=100")).items;
+  const tbody = document.getElementById("treaty-rows");
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">暂无合约，先新建一个。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map(t => {
+    const neg = t.remaining_capacity < 0;
+    return `<tr>
+      <td class="row-link" data-id="${t.id}">${esc(t.reference)}</td>
+      <td>${esc(t.name)}</td>
+      <td>${fmt(t.current_limit)}</td>
+      <td>${fmt(t.used_approved_recoveries)}</td>
+      <td class="${neg ? "neg" : ""}">${fmt(t.remaining_capacity)}${neg ? " ⚠超占" : ""}</td>
+      <td>${t.pending_endorsements}</td>
+      <td><button class="secondary" data-id="${t.id}">查看台账</button></td>
+    </tr>`;
+  }).join("");
+}
+
+function tagFor(e) {
+  const dir = `<span class="tag ${e.direction}">${e.direction === "increase" ? "加保" : "减保"}</span>`;
+  const status = `<span class="tag ${e.status}">${e.status === "pending" ? "待确认" : "已确认"}</span>`;
+  return dir + " " + status;
+}
+
+async function loadDetail(id) {
+  currentTreatyId = id;
+  const t = await api(`/api/treaties/${id}`);
+  document.getElementById("treaty-detail").hidden = false;
+  document.getElementById("detail-title").textContent = `台账：${t.reference} · ${t.name}（${t.currency}）`;
+  document.getElementById("d-limit").textContent = fmt(t.current_limit);
+  document.getElementById("d-used").textContent = fmt(t.used_approved_recoveries);
+  const rem = document.getElementById("d-remaining");
+  rem.textContent = fmt(t.remaining_capacity) + (t.over_committed ? " ⚠ 已超占" : "");
+  rem.className = "value" + (t.remaining_capacity < 0 ? " neg" : "");
+
+  document.getElementById("endo-rows").innerHTML = t.endorsements.length ? t.endorsements.map(e => `<tr>
+    <td>${e.id}</td><td>${e.effective_date}</td><td>${tagFor(e)}</td><td>${fmt(e.amount)}</td>
+    <td>${esc(e.reason)}</td><td>${e.status === "pending" ? "待确认" : "已确认"}</td><td>${e.seq ?? "—"}</td>
+    <td>${esc(e.status === "confirmed" ? e.confirmed_by : e.created_by)}</td>
+    <td>${e.status === "pending" ? `<button data-endo="${e.id}">确认并重算</button>` : ""}</td>
+  </tr>`).join("") : '<tr><td colspan="9" class="muted">暂无批单</td></tr>';
+
+  document.getElementById("version-rows").innerHTML = t.limit_versions.length ? t.limit_versions.map(v => `<tr>
+    <td>v${v.seq}</td><td>${v.effective_date}</td>
+    <td>${v.direction === "increase" ? "加保" : "减保"} ${fmt(v.amount)}（批单#${v.endorsement_id}）</td>
+    <td>${fmt(v.limit_after)}</td>
+  </tr>`).join("") : '<tr><td colspan="4" class="muted">尚无已确认批单，当前为初始限额</td></tr>';
+
+  document.getElementById("claim-rows").innerHTML = t.approved_claims.length ? t.approved_claims.map(c => `<tr>
+    <td>${esc(c.claim_number)}</td><td>${c.approved_date}</td><td>${fmt(c.recoverable_amount)}</td>
+  </tr>`).join("") : '<tr><td colspan="3" class="muted">暂无已核定赔案</td></tr>';
+
+  document.getElementById("snapshot-rows").innerHTML = t.snapshots.slice().reverse().map(s => `<tr>
+    <td class="muted">${esc(s.created_at)}</td><td>${esc(s.kind)}</td><td>${s.effective_date ?? "—"}</td>
+    <td>${fmt(s.limit_after)}</td><td>${fmt(s.used_approved_recoveries)}</td>
+    <td class="${s.remaining !== null && s.remaining < 0 ? "neg" : ""}">${fmt(s.remaining)}</td>
+    <td>${esc(s.summary)}</td><td>${esc(s.actor_id)}</td>
+  </tr>`).join("");
+}
+
+async function refreshAll() {
+  await loadTreaties();
+  if (currentTreatyId) await loadDetail(currentTreatyId);
+}
+
+document.getElementById("treaty-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  try {
+    const body = {reference: f.reference.value, data: {
+      name: f.name.value, initial_limit: Number(f.initial_limit.value), inception_date: f.inception_date.value || undefined,
+    }};
+    const t = await api("/api/treaties", {method: "POST", body: JSON.stringify(body)});
+    banner(`合约 ${t.reference} 已建账，初始限额 ${fmt(t.current_limit)}`, true);
+    f.reset();
+    await loadTreaties();
+    await loadDetail(t.id);
+  } catch (err) { banner(err.message, false); }
+};
+
+document.getElementById("endo-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!currentTreatyId) return banner("请先选择合约", false);
+  const f = ev.target;
+  try {
+    await api(`/api/treaties/${currentTreatyId}/endorsements`, {method: "POST", body: JSON.stringify({data: {
+      effective_date: f.effective_date.value, direction: f.direction.value,
+      amount: Number(f.amount.value), reason: f.reason.value,
+    }})});
+    banner("批单已登记为待确认；确认时将按生效日重算限额并校验缺口", true);
+    f.reset();
+    await loadDetail(currentTreatyId);
+  } catch (err) { banner(err.message, false); }
+};
+
+document.getElementById("claim-form").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!currentTreatyId) return banner("请先选择合约", false);
+  const f = ev.target;
+  try {
+    await api(`/api/treaties/${currentTreatyId}/claims`, {method: "POST", body: JSON.stringify({data: {
+      claim_number: f.claim_number.value, approved_date: f.approved_date.value || undefined,
+      recoverable_amount: Number(f.recoverable_amount.value),
+    }})});
+    banner("已核定赔案已登记并计入占用", true);
+    f.reset();
+    await refreshAll();
+  } catch (err) { banner(err.message, false); }
+};
+
+document.addEventListener("click", async (ev) => {
+  const endo = ev.target.dataset && ev.target.dataset.endo;
+  const id = ev.target.dataset && ev.target.dataset.id;
+  try {
+    if (endo) {
+      await api(`/api/endorsements/${Number(endo)}/confirm`, {method: "POST", body: "{}"});
+      banner("批单已确认，各版限额已按生效先后重算", true);
+      await refreshAll();
+    } else if (id) {
+      await loadDetail(Number(id));
+    }
+  } catch (err) { banner(err.message, false); }
+});
+
+document.getElementById("reload-treaties").onclick = () => refreshAll().catch(err => banner(err.message, false));
+document.getElementById("load-records").onclick = async () => {
+  const pre = document.getElementById("output");
+  pre.hidden = false;
+  const data = await fetch("/api/records?limit=20", {headers}).then(r => r.json());
+  pre.textContent = JSON.stringify(data, null, 2);
+};
+
+loadTreaties().catch(err => banner(err.message, false));
 </script>
 </body>
 </html>

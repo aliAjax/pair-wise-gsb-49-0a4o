@@ -12,6 +12,10 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+TREATY_RE = re.compile(r"^/api/treaties/(\d+)$")
+ENDORSEMENT_RE = re.compile(r"^/api/treaties/(\d+)/endorsements$")
+CONFIRM_ENDORSEMENT_RE = re.compile(r"^/api/endorsements/(\d+)/confirm$")
+CLAIM_RE = re.compile(r"^/api/treaties/(\d+)/claims$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +61,10 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                if getattr(exc, "details", None):
+                    payload["details"] = exc.details
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -87,6 +94,13 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
                     return
+                if parsed.path == "/api/treaties":
+                    self._send(200, {"items": service.list_treaties(self._actor(), limit=int(query.get("limit", ["100"])[0]))})
+                    return
+                match = TREATY_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_treaty(self._actor(), int(match.group(1))))
+                    return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
                 self._handle_error(exc)
@@ -98,6 +112,25 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/treaties":
+                    treaty = service.create_treaty(self._actor(), body.get("reference", ""), body.get("data", {}))
+                    self._send(201, treaty)
+                    return
+                match = ENDORSEMENT_RE.match(parsed.path)
+                if match:
+                    endorsement = service.register_endorsement(self._actor(), int(match.group(1)), body.get("data", {}))
+                    self._send(201, endorsement)
+                    return
+                match = CLAIM_RE.match(parsed.path)
+                if match:
+                    service.register_claim(self._actor(), int(match.group(1)), body.get("data", {}))
+                    self._send(201, service.get_treaty(self._actor(), int(match.group(1))))
+                    return
+                match = CONFIRM_ENDORSEMENT_RE.match(parsed.path)
+                if match:
+                    treaty = service.confirm_endorsement(self._actor(), int(match.group(1)))
+                    self._send(200, treaty)
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:
