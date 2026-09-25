@@ -47,8 +47,32 @@ class Repository:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS endorsements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    effective_date TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    resulting_limit REAL NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS balance_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
+                    endorsement_id INTEGER REFERENCES endorsements(id) ON DELETE SET NULL,
+                    current_limit REAL NOT NULL,
+                    capacity REAL NOT NULL,
+                    used_amount REAL NOT NULL,
+                    remaining_amount REAL NOT NULL,
+                    details TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_records_state ON records(state);
                 CREATE INDEX IF NOT EXISTS idx_audit_record ON audit_events(record_id, id);
+                CREATE INDEX IF NOT EXISTS idx_endorsements_record ON endorsements(record_id, effective_date, id);
+                CREATE INDEX IF NOT EXISTS idx_snapshots_record ON balance_snapshots(record_id, id);
                 """
             )
 
@@ -125,6 +149,56 @@ class Repository:
                 "INSERT INTO audit_events(record_id,action,actor_id,version,details,created_at) VALUES(?,?,?,?,?,?)",
                 (record_id, action, actor_id, int(row["version"]), json.dumps(details, ensure_ascii=False, sort_keys=True), _now()),
             )
+
+    def register_endorsement(self, record_id: int, endorsement: Dict[str, Any], actor_id: str, projector) -> int:
+        """单事务登记批单：插入后由projector按生效先后重算每版限额，失败整体回滚。"""
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
+            if row is None:
+                connection.rollback()
+                raise NotFound("记录不存在")
+            record = self._row(row)
+            cursor = connection.execute(
+                "INSERT INTO endorsements(record_id,effective_date,direction,amount,reason,resulting_limit,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (record_id, endorsement["effective_date"], endorsement["direction"], endorsement["amount"], endorsement["reason"], 0.0, actor_id, now),
+            )
+            new_id = int(cursor.lastrowid)
+            rows = [dict(item) for item in connection.execute("SELECT * FROM endorsements WHERE record_id=? ORDER BY effective_date, id", (record_id,)).fetchall()]
+            try:
+                versions, snapshot = projector(record, rows, new_id)
+            except Exception:
+                connection.rollback()
+                raise
+            for version in versions:
+                connection.execute("UPDATE endorsements SET resulting_limit=? WHERE id=?", (version["resulting_limit"], version["id"]))
+            connection.execute(
+                "INSERT INTO balance_snapshots(record_id,endorsement_id,current_limit,capacity,used_amount,remaining_amount,details,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (record_id, new_id, snapshot["current_limit"], snapshot["capacity"], snapshot["used"], snapshot["remaining"], json.dumps(snapshot, ensure_ascii=False, sort_keys=True), now),
+            )
+            connection.execute(
+                "INSERT INTO audit_events(record_id,action,actor_id,version,details,created_at) VALUES(?,?,?,?,?,?)",
+                (record_id, "endorsement_registered", actor_id, int(record["version"]), json.dumps(dict(endorsement, endorsement_id=new_id, summary=snapshot["summary"], current_limit=snapshot["current_limit"], used=snapshot["used"], remaining=snapshot["remaining"]), ensure_ascii=False, sort_keys=True), now),
+            )
+            connection.commit()
+        return new_id
+
+    def list_endorsements(self, record_id: int) -> List[Dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM endorsements WHERE record_id=? ORDER BY effective_date, id", (record_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_snapshots(self, record_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM balance_snapshots WHERE record_id=? ORDER BY id DESC LIMIT ?", (record_id, limit)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["details"] = json.loads(item["details"])
+            result.append(item)
+        return result
 
     def audit_timeline(self, record_id: int) -> List[Dict[str, Any]]:
         self.get(record_id)

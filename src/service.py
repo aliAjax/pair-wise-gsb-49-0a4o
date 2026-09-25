@@ -2,7 +2,7 @@
 from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
-from .domain import Actor, PermissionDenied, text
+from .domain import Actor, Conflict, PermissionDenied, text
 from .repository import Repository
 from .rules import DomainRules
 
@@ -66,6 +66,31 @@ class Service:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
         return self.audit.timeline(record_id)
+
+    def register_endorsement(self, actor: Actor, record_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        if not self.rules.role_can_endorse(actor.role):
+            raise PermissionDenied("角色无权登记批单")
+        record = self.repository.get(record_id)
+        if record["state"] == "rejected":
+            raise Conflict("已拒绝的合约不能登记批单")
+        endorsement = self.rules.validate_endorsement(data or {})
+        self.repository.register_endorsement(
+            record_id=int(record_id),
+            endorsement=endorsement,
+            actor_id=actor.user_id,
+            projector=lambda rec, rows, new_id: self.rules.project_endorsement(rec, rows, new_id),
+        )
+        return self.contract_ledger(actor, record_id)
+
+    def contract_ledger(self, actor: Actor, record_id: int) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        record = self.repository.get(record_id)
+        endorsements = self.repository.list_endorsements(record_id)
+        snapshots = self.repository.list_snapshots(record_id)
+        return self.rules.ledger_view(record, endorsements, snapshots)
 
     def stats(self, actor: Actor) -> Dict[str, int]:
         actor = self._actor(actor)
